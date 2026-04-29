@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+data/
+disks/
+isos/
+logs/
+run/
+
+minecraft/jars/
+minecraft/logs/
+minecraft/run/
+minecraft/servers/

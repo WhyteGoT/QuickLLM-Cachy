@@ -1,0 +1,24 @@
+[Unit]
+Description=QuickLLM sandbox worker for QEMU/noVNC and Minecraft
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=emanuel
+Group=emanuel
+WorkingDirectory=/home/emanuel/quickllm-sandbox
+Environment=PATH=/home/emanuel/quickllm-sandbox/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+Environment=SANDBOX_HOST=0.0.0.0
+Environment=SANDBOX_PORT=8765
+Environment=SANDBOX_LAN_HOST=192.168.1.2
+Environment=MINECRAFT_PUBLIC_HOST=cachyos.tail9776fa.ts.net
+Environment=MINECRAFT_PUBLIC_PORT=10000
+Environment=MINECRAFT_LOCAL_PORT=25565
+ExecStart=/home/emanuel/quickllm-sandbox/.venv/bin/python /home/emanuel/quickllm-sandbox/sandbox_server.py
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

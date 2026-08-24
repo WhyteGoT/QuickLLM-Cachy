@@ -1,0 +1,24 @@
+[Unit]
+Description=QuickLLM sandbox worker (QEMU/noVNC + Minecraft)
+Documentation=file://@APP_DIR@/docs/INFRASTRUCTURE.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@APP_DIR@
+# Il venv per primo: websockify vive li' dentro, non nei pacchetti di sistema.
+Environment=PATH=@APP_DIR@/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# Tutta la configurazione sta in config.env. Nessun valore hardcoded qui.
+Environment=SANDBOX_CONFIG=@APP_DIR@/config.env
+ExecStart=@APP_DIR@/.venv/bin/python @APP_DIR@/sandbox_server.py
+Restart=on-failure
+RestartSec=3
+# Le VM QEMU e il server Minecraft sono figli: KillMode=control-group
+# garantisce che si spengano insieme al worker.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

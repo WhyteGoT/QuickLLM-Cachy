@@ -1,0 +1,25 @@
+[Unit]
+Description=LM Studio headless API server
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=@HOME@
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@HOME@
+Environment=HOME=@HOME@
+Environment=PATH=@LMSTUDIO_CLI_DIR@:/usr/local/sbin:/usr/local/bin:/usr/bin
+Environment=LMS_SERVER_HOST=@LMS_SERVER_HOST@
+Environment=LMSTUDIO_BIN=@LMSTUDIO_BIN@
+# LM Studio e' un'app GUI: il watchdog la tiene viva dentro un Xvfb.
+ExecStart=@APP_DIR@/bin/lmstudio-headless-watchdog
+Restart=always
+RestartSec=10
+TimeoutStartSec=180
+TimeoutStopSec=60
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -1,68 +1,48 @@
-# QuickLLM Sandbox Worker
+# QuickLLM Sandbox
 
-Standalone CachyOS worker for QuickLLM VM and Minecraft workloads.
-
-Place bootable ISO files in `isos/`. The API lists available distros dynamically from those files.
-
-Service endpoints:
-
-- `GET /api/rag/vms`
-- `POST /api/rag/vms/start`
-- `POST /api/rag/vms/stop`
-- `GET /api/rag/minecraft`
-- `POST /api/rag/minecraft/start`
-- `POST /api/rag/minecraft/stop`
-- `POST /api/rag/minecraft/command`
-- `POST /api/rag/minecraft/upload-world`
-- `POST /api/rag/minecraft/upload-plugins`
-- `POST /api/rag/minecraft/upload-mods`
-
-Minecraft public address: `cachyos.tail9776fa.ts.net:10000`.
-
-## Minecraft examples
-
-Status:
+Worker che esegue **VM QEMU/KVM** e **server Minecraft** per conto di QuickLLM,
+che gira su un'altra macchina. Questo repo contiene il worker e tutta
+l'infrastruttura di contorno di questo host, in modo da poterla ricostruire da
+zero su qualsiasi distro Linux.
 
 ```bash
-curl http://127.0.0.1:8765/api/rag/minecraft
+git clone --recurse-submodules https://github.com/WhyteGoT/QuickLLM-Cachy.git
+cd QuickLLM-Cachy
+./install.sh --all
+./scripts/doctor.sh
 ```
 
-Start PaperMC. If `version` is empty or `latest`, the backend uses the latest PaperMC version. If a non-empty version is specified, it must exist in the PaperMC API or the backend returns HTTP 400.
+## Documentazione
 
-```bash
-curl -X POST http://127.0.0.1:8765/api/rag/minecraft/start \
-  -H 'Content-Type: application/json' \
-  -d '{"owner_id":"test","name":"Test server","version":"latest"}'
+| | |
+|---|---|
+| **[docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md)** | Come e' fatto tutto: servizi, porte, rete, API, sicurezza, limiti |
+| **[docs/INSTALL.md](docs/INSTALL.md)** | Installare da zero, migrare su un'altra distro, troubleshooting |
+
+## Struttura
+
+```
+sandbox_server.py       il worker: API HTTP, QEMU, Minecraft
+install.sh              installer idempotente, rileva la distro
+config.example.env      ogni opzione documentata  (copia in config.env)
+services/*.in           template systemd, senza percorsi hardcoded
+scripts/doctor.sh       diagnostica: dipendenze, servizi, porte, rete
+scripts/backup.sh       backup e restore di config, stato e mondi Minecraft
+scripts/tailscale-funnel.sh   espone Minecraft su internet
+bin/                    watchdog di LM Studio
+novnc/                  submodule: console web delle VM
 ```
 
-Run a console command on the active Minecraft server. Send commands without the leading slash.
+## In breve
 
-```bash
-curl -X POST http://127.0.0.1:8765/api/rag/minecraft/command \
-  -H 'Content-Type: application/json' \
-  -d '{"owner_id":"test","command":"say test da console"}'
-```
+- **Configurazione in un posto solo.** Tutto sta in `config.env` (ignorato da
+  git, contiene i segreti). Gli unit systemd non hanno piu' valori hardcoded.
+- **Niente percorsi legati alla distro.** Firmware UEFI, noVNC, IP LAN e nome
+  Tailscale vengono rilevati a runtime; ogni default e' sovrascrivibile.
+- **Aggiungere una distro = copiare una ISO** in `isos/`. Nessun codice da
+  toccare.
+- **Un solo workload alla volta**: una VM *oppure* un server Minecraft.
 
-Upload a world archive (`.zip` or `.mcworld`). Stop the server before replacing `world/`.
-
-```bash
-curl -X POST http://127.0.0.1:8765/api/rag/minecraft/upload-world \
-  -F owner_id=test \
-  -F file=@world.zip
-```
-
-Upload Paper/Bukkit/Spigot plugins. A `.jar` is copied directly; a `.zip` installs only contained `.jar` files.
-
-```bash
-curl -X POST http://127.0.0.1:8765/api/rag/minecraft/upload-plugins \
-  -F owner_id=test \
-  -F file=@plugin.jar
-```
-
-Upload mods into `mods/`. The current server runtime is Paper, so Forge/Fabric mods are stored but require a Forge/Fabric server to be loaded.
-
-```bash
-curl -X POST http://127.0.0.1:8765/api/rag/minecraft/upload-mods \
-  -F owner_id=test \
-  -F file=@mods.zip
-```
+> **Attenzione:** l'API non ha autenticazione. Tienila su LAN/Tailscale e non
+> aprirla sul router. Vedi la sezione Sicurezza in
+> [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md).

@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -23,39 +24,143 @@ ISO_DIR = BASE_DIR / "isos"
 DISK_DIR = BASE_DIR / "disks"
 RUN_DIR = BASE_DIR / "run"
 LOG_DIR = BASE_DIR / "logs"
-OVMF_CODE = Path("/usr/share/edk2/x64/OVMF_CODE.4m.fd")
-OVMF_VARS = Path("/usr/share/edk2/x64/OVMF_VARS.4m.fd")
 MC_DIR = BASE_DIR / "minecraft"
 MC_JAR_DIR = MC_DIR / "jars"
 MC_SERVER_DIR = MC_DIR / "servers"
 MC_RUN_DIR = MC_DIR / "run"
 MC_LOG_DIR = MC_DIR / "logs"
 STATE_FILE = DATA_DIR / "state.json"
+CONFIG_FILE = Path(os.environ.get("SANDBOX_CONFIG") or (BASE_DIR / "config.env"))
 
-API_HOST = os.environ.get("SANDBOX_HOST", "0.0.0.0")
-API_PORT = int(os.environ.get("SANDBOX_PORT", "8765"))
-LAN_HOST = os.environ.get("SANDBOX_LAN_HOST", "192.168.1.2")
-PUBLIC_MC_HOST = os.environ.get("MINECRAFT_PUBLIC_HOST", "cachyos.tail9776fa.ts.net")
-PUBLIC_MC_PORT = int(os.environ.get("MINECRAFT_PUBLIC_PORT", "10000"))
-MC_PORT = int(os.environ.get("MINECRAFT_LOCAL_PORT", "25565"))
 
-DEFAULT_VM_MEMORY_MB = 4096
-DEFAULT_VM_VCPUS = 4
-MAX_RUNNING_WORKLOADS = 1
-HOST_RESERVE_MB = 4096
+def load_env_file(path):
+    """Seed os.environ from a KEY=VALUE file. Real environment variables win,
+    so systemd Environment= lines always override config.env."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_env_file(CONFIG_FILE)
+
+
+def env_str(name, default=""):
+    return (os.environ.get(name) or "").strip() or default
+
+
+def env_int(name, default):
+    try:
+        return int(env_str(name, str(default)))
+    except ValueError:
+        return default
+
+
+# OVMF/edk2 firmware lives in a different place on every distro. Probe instead
+# of hardcoding, and let OVMF_CODE_PATH / OVMF_VARS_PATH force a location.
+OVMF_CODE_CANDIDATES = (
+    "/usr/share/edk2/x64/OVMF_CODE.4m.fd",      # Arch, CachyOS, Manjaro (edk2-ovmf)
+    "/usr/share/edk2/x64/OVMF_CODE.fd",
+    "/usr/share/OVMF/OVMF_CODE_4M.fd",          # Debian, Ubuntu, Mint (ovmf)
+    "/usr/share/OVMF/OVMF_CODE.fd",
+    "/usr/share/edk2/ovmf/OVMF_CODE.fd",        # Fedora, RHEL (edk2-ovmf)
+    "/usr/share/qemu/ovmf-x86_64-code.bin",     # openSUSE (qemu-ovmf-x86_64)
+)
+OVMF_VARS_CANDIDATES = (
+    "/usr/share/edk2/x64/OVMF_VARS.4m.fd",
+    "/usr/share/edk2/x64/OVMF_VARS.fd",
+    "/usr/share/OVMF/OVMF_VARS_4M.fd",
+    "/usr/share/OVMF/OVMF_VARS.fd",
+    "/usr/share/edk2/ovmf/OVMF_VARS.fd",
+    "/usr/share/qemu/ovmf-x86_64-vars.bin",
+)
+
+
+def first_existing(candidates, override=""):
+    if override:
+        path = Path(override)
+        return path if path.exists() else None
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.exists():
+            return path
+    return None
+
+
+def ovmf_code_path():
+    return first_existing(OVMF_CODE_CANDIDATES, env_str("OVMF_CODE_PATH"))
+
+
+def ovmf_vars_path():
+    return first_existing(OVMF_VARS_CANDIDATES, env_str("OVMF_VARS_PATH"))
+
+
+def detect_lan_host():
+    """Address of the interface that carries the default route. No packet is
+    sent: connect() on UDP only consults the routing table."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+def detect_tailscale_host():
+    if not shutil.which("tailscale"):
+        return ""
+    try:
+        raw = subprocess.check_output(
+            ["tailscale", "status", "--json"], text=True, timeout=5, stderr=subprocess.DEVNULL
+        )
+        return ((json.loads(raw).get("Self") or {}).get("DNSName") or "").rstrip(".")
+    except Exception:
+        return ""
+
+
+API_HOST = env_str("SANDBOX_HOST", "0.0.0.0")
+API_PORT = env_int("SANDBOX_PORT", 8765)
+LAN_HOST = env_str("SANDBOX_LAN_HOST") or detect_lan_host()
+PUBLIC_MC_PORT = env_int("MINECRAFT_PUBLIC_PORT", 10000)
+MC_PORT = env_int("MINECRAFT_LOCAL_PORT", 25565)
+PUBLIC_MC_HOST = env_str("MINECRAFT_PUBLIC_HOST") or detect_tailscale_host() or LAN_HOST
+
+DEFAULT_VM_MEMORY_MB = env_int("VM_MEMORY_MB", 4096)
+DEFAULT_VM_VCPUS = env_int("VM_VCPUS", 4)
+DEFAULT_VM_DISK_SIZE = env_str("VM_DISK_SIZE", "40G")
+WIN11_VM_DISK_SIZE = env_str("VM_DISK_SIZE_WIN11", "60G")
+MAX_RUNNING_WORKLOADS = env_int("MAX_RUNNING_WORKLOADS", 1)
+HOST_RESERVE_MB = env_int("HOST_RESERVE_MB", 4096)
 VNC_HOST = "127.0.0.1"
-VNC_DISPLAY = 1
+VNC_DISPLAY = env_int("VNC_DISPLAY", 1)
 VNC_PORT = 5900 + VNC_DISPLAY
-NOVNC_HOST = "0.0.0.0"
-NOVNC_PORT = 6080
+NOVNC_HOST = env_str("NOVNC_HOST", "0.0.0.0")
+NOVNC_PORT = env_int("NOVNC_PORT", 6080)
 WIN11_ALIASES = ("windows11", "windows-11", "win11", "win-11")
 WIN98_ALIASES = ("windows98", "windows-98", "win98", "win-98")
 WINXP_ALIASES = ("windowsxp", "windows-xp", "winxp", "win-xp")
+WIN11_BOOT_KEY_SECONDS = env_int("WIN11_BOOT_KEY_SECONDS", 15)
+WIN11_BOOT_KEY_INTERVAL = 0.25
 
-DEFAULT_MC_MEMORY_MB = 4096
-DEFAULT_MC_VCPUS = 4
-MAX_UPLOAD_BYTES = 512 * 1024 * 1024
-WIN98_MEMORY_MB = 512
+DEFAULT_MC_MEMORY_MB = env_int("MINECRAFT_MEMORY_MB", 4096)
+DEFAULT_MC_VCPUS = env_int("MINECRAFT_VCPUS", 4)
+MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_MB", 512) * 1024 * 1024
+WIN98_MEMORY_MB = env_int("VM_MEMORY_MB_WIN98", 512)
 
 MC_PROCS = {}
 
@@ -87,13 +192,20 @@ def process_alive(pid):
     if not pid:
         return False
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+        os.kill(pid, 0)
+        stat_path = Path(f"/proc/{pid}/stat")
+        if stat_path.exists():
+            stat_tail = stat_path.read_text(encoding="utf-8").rsplit(") ", 1)[-1]
+            state = stat_tail.split(maxsplit=1)[0]
+            if state == "Z":
+                return False
         return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except (TypeError, ValueError):
+    except (OSError, TypeError, ValueError):
         return False
 
 
@@ -276,16 +388,26 @@ def tail_text(path, max_bytes=8192):
     return "\n".join(cleaned[-8:])
 
 
+NOVNC_CANDIDATES = (
+    "novnc",                        # git submodule shipped with this repo
+    "/usr/share/novnc",             # Debian, Ubuntu, Fedora (novnc)
+    "/usr/share/webapps/novnc",     # Arch, CachyOS (novnc)
+    "/usr/share/noVNC",
+    "/usr/share/novnc-common",
+)
+
+
 def novnc_web_dir():
-    candidates = [
-        BASE_DIR / "novnc",
-        Path("/usr/share/novnc"),
-        Path("/usr/share/webapps/novnc"),
-        Path("/usr/share/noVNC"),
-    ]
-    for candidate in candidates:
-        if (candidate / "vnc.html").exists():
-            return str(candidate)
+    override = env_str("NOVNC_WEB_DIR")
+    if override:
+        path = Path(override)
+        return str(path) if (path / "vnc.html").exists() else None
+    for candidate in NOVNC_CANDIDATES:
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        if (path / "vnc.html").exists():
+            return str(path)
     return None
 
 
@@ -370,16 +492,73 @@ def start_swtpm(vm_id):
     raise ApiError(500, {"error": "swtpm_failed_to_start"})
 
 
+def send_hmp_command(monitor_path, command):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        sock.connect(str(monitor_path))
+        sock.sendall(command.encode("ascii") + b"\n")
+
+
+def trigger_windows11_dvd_boot(monitor_path):
+    deadline = time.time() + WIN11_BOOT_KEY_SECONDS
+    while time.time() < deadline:
+        try:
+            send_hmp_command(monitor_path, "sendkey ret")
+        except OSError:
+            pass
+        time.sleep(WIN11_BOOT_KEY_INTERVAL)
+
+
+def qemu_size_to_bytes(size):
+    match = re.fullmatch(r"(\d+)([KMGT]?)", str(size).strip(), re.IGNORECASE)
+    if not match:
+        raise ValueError(f"invalid qemu size: {size}")
+    value = int(match.group(1))
+    suffix = match.group(2).upper()
+    multipliers = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    return value * multipliers[suffix]
+
+
+def vm_disk_size(profile):
+    if profile == "windows11":
+        return WIN11_VM_DISK_SIZE
+    return DEFAULT_VM_DISK_SIZE
+
+
+def ensure_vm_disk(disk, size):
+    if not disk.exists():
+        subprocess.check_call(["qemu-img", "create", "-f", "qcow2", str(disk), size])
+        return
+
+    info = subprocess.check_output(["qemu-img", "info", "--output=json", str(disk)], text=True)
+    virtual_size = int(json.loads(info).get("virtual-size", 0))
+    desired_size = qemu_size_to_bytes(size)
+    if virtual_size < desired_size:
+        subprocess.check_call(["qemu-img", "resize", str(disk), size])
+
+
 def windows11_vm_args(vm_id, disk):
-    if not OVMF_CODE.exists() or not OVMF_VARS.exists():
-        raise ApiError(503, {"error": "ovmf_unavailable"})
-    vars_path = RUN_DIR / f"{vm_id}-OVMF_VARS.fd"
-    shutil.copyfile(OVMF_VARS, vars_path)
+    code_path = ovmf_code_path()
+    vars_template = ovmf_vars_path()
+    if not code_path or not vars_template:
+        raise ApiError(503, {
+            "error": "ovmf_unavailable",
+            "hint": "installa il pacchetto UEFI di QEMU (edk2-ovmf su Arch/Fedora, ovmf su Debian)",
+            "searched": list(OVMF_CODE_CANDIDATES),
+        })
+    vars_path = disk.with_suffix(".OVMF_VARS.fd")
+    monitor_path = RUN_DIR / f"{vm_id}-monitor.sock"
+    try:
+        monitor_path.unlink()
+    except FileNotFoundError:
+        pass
+    if not vars_path.exists():
+        shutil.copyfile(vars_template, vars_path)
     tpm_pid, tpm_sock = start_swtpm(vm_id)
     args = [
         "-machine", "q35,accel=kvm",
         "-cpu", "host",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={code_path}",
         "-drive", f"if=pflash,format=raw,file={vars_path}",
         "-chardev", f"socket,id=chrtpm,path={tpm_sock}",
         "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
@@ -387,8 +566,11 @@ def windows11_vm_args(vm_id, disk):
         "-drive", f"file={disk},format=qcow2,if=none,id=drive0",
         "-device", "ich9-ahci,id=ahci",
         "-device", "ide-hd,drive=drive0,bus=ahci.0",
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-tablet,bus=xhci.0",
+        "-monitor", f"unix:{monitor_path},server=on,wait=off",
     ]
-    return args, tpm_pid, str(vars_path)
+    return args, tpm_pid, str(vars_path), str(monitor_path)
 
 
 def legacy_windows_vm_args(profile, disk):
@@ -428,15 +610,15 @@ def start_vm(body):
     did = iso_id(iso)
     vm_id = f"{owner}-{did}-{int(time.time())}"
     disk = DISK_DIR / f"{owner}-{did}.qcow2"
-    if not disk.exists():
-        subprocess.check_call(["qemu-img", "create", "-f", "qcow2", str(disk), "40G"])
 
     profile = vm_profile(iso)
+    ensure_vm_disk(disk, vm_disk_size(profile))
     tpm_pid = None
     ovmf_vars = None
+    monitor_path = None
     memory_mb = DEFAULT_VM_MEMORY_MB
     if profile == "windows11":
-        profile_args, tpm_pid, ovmf_vars = windows11_vm_args(vm_id, disk)
+        profile_args, tpm_pid, ovmf_vars, monitor_path = windows11_vm_args(vm_id, disk)
         net_device = "e1000e"
     elif profile in {"windows98", "windowsxp"}:
         profile_args = legacy_windows_vm_args(profile, disk)
@@ -471,6 +653,8 @@ def start_vm(body):
         if tpm_pid:
             terminate_pid(tpm_pid, timeout=2)
         raise ApiError(500, {"error": "qemu_failed_to_start", "log": str(LOG_DIR / f"vm-{vm_id}.log")})
+    if profile == "windows11" and monitor_path:
+        trigger_windows11_dvd_boot(monitor_path)
 
     websockify_cmd = [
         "websockify",
@@ -498,6 +682,7 @@ def start_vm(body):
         "websockify_pid": ws.pid,
         "tpm_pid": tpm_pid,
         "ovmf_vars": ovmf_vars,
+        "monitor": monitor_path,
         "created_at": int(time.time()),
     }
     state["vm"] = vm
@@ -816,6 +1001,45 @@ def install_jars(fields, files, target_name, mods_message=False):
     return payload
 
 
+def health_report():
+    code_path = ovmf_code_path()
+    vars_template = ovmf_vars_path()
+    web_dir = novnc_web_dir()
+    binaries = {name: shutil.which(name) for name in
+                ("qemu-system-x86_64", "qemu-img", "websockify", "swtpm", "java", "tailscale")}
+    checks = {
+        "kvm": kvm_available(),
+        "qemu": bool(binaries["qemu-system-x86_64"] and binaries["qemu-img"]),
+        "websockify": bool(binaries["websockify"]),
+        "swtpm": bool(binaries["swtpm"]),
+        "java": bool(binaries["java"]),
+        "ovmf": bool(code_path and vars_template),
+        "novnc": bool(web_dir),
+        "isos": len(list_distros()),
+    }
+    # Windows 11 needs UEFI + an emulated TPM; everything else does not.
+    checks["windows11_capable"] = checks["kvm"] and checks["ovmf"] and checks["swtpm"]
+    return {
+        "ok": all(checks[k] for k in ("kvm", "qemu", "websockify", "novnc")),
+        "checks": checks,
+        "paths": {
+            "base_dir": str(BASE_DIR),
+            "config_file": str(CONFIG_FILE) if CONFIG_FILE.exists() else None,
+            "ovmf_code": str(code_path) if code_path else None,
+            "ovmf_vars": str(vars_template) if vars_template else None,
+            "novnc_web_dir": web_dir,
+            "binaries": binaries,
+        },
+        "network": {
+            "api": f"{API_HOST}:{API_PORT}",
+            "lan_host": LAN_HOST,
+            "novnc": f"{NOVNC_HOST}:{NOVNC_PORT}",
+            "minecraft_local": f"{LAN_HOST}:{MC_PORT}",
+            "minecraft_public": f"{PUBLIC_MC_HOST}:{PUBLIC_MC_PORT}",
+        },
+    }
+
+
 class ApiError(Exception):
     def __init__(self, status, payload):
         super().__init__(payload)
@@ -865,7 +1089,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/health":
-                return self.send_json(200, {"ok": True})
+                return self.send_json(200, health_report())
             if path == "/api/rag/vms":
                 return self.send_json(200, vm_status())
             if path == "/api/rag/minecraft":
@@ -909,8 +1133,14 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ensure_dirs()
     cleanup_state()
-    server = ThreadingHTTPServer((API_HOST, API_PORT), Handler)
+    report = health_report()
+    missing = [name for name, ok in report["checks"].items() if ok is False]
     print(f"quickllm sandbox listening on {API_HOST}:{API_PORT}", flush=True)
+    print(f"config: {report['paths']['config_file'] or '(nessuno, uso i default)'}", flush=True)
+    print(f"minecraft public address: {PUBLIC_MC_HOST}:{PUBLIC_MC_PORT}", flush=True)
+    if missing:
+        print(f"ATTENZIONE, dipendenze mancanti: {', '.join(missing)}", flush=True)
+    server = ThreadingHTTPServer((API_HOST, API_PORT), Handler)
     server.serve_forever()
 
 

@@ -1,12 +1,18 @@
+# --- segreti e config della singola macchina --------------------------------
+config.env
+
+# --- runtime ----------------------------------------------------------------
 .venv/
 __pycache__/
 *.py[cod]
 
+# --- dati pesanti / ricreabili ----------------------------------------------
 data/
 disks/
 isos/
 logs/
 run/
+backups/
 
 minecraft/jars/
 minecraft/logs/

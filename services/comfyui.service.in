@@ -1,0 +1,16 @@
+[Unit]
+Description=ComfyUI (generazione immagini)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@COMFYUI_DIR@
+ExecStart=@COMFYUI_PYTHON@ main.py @COMFYUI_ARGS@
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

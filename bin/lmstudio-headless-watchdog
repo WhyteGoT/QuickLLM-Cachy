@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# LM Studio non ha una vera modalita' server: e' un'app Electron che espone
+# l'API solo mentre la GUI gira. La avviamo dentro un framebuffer virtuale
+# (Xvfb) e la rimettiamo in piedi se muore.
+set -u
+
+LMSTUDIO_BIN="${LMSTUDIO_BIN:-/usr/bin/lm-studio}"
+export LMS_SERVER_HOST="${LMS_SERVER_HOST:-0.0.0.0}"
+
+if ! command -v xvfb-run >/dev/null 2>&1; then
+  echo "xvfb-run non trovato: installa xorg-server-xvfb (Arch) o xvfb (Debian)" >&2
+  exit 1
+fi
+
+server_up() {
+  command -v lms >/dev/null 2>&1 && lms server status >/dev/null 2>&1
+}
+
+while true; do
+  if server_up; then
+    sleep 30
+    continue
+  fi
+
+  xvfb-run -a -s "-screen 0 1280x720x24 -nolisten tcp" "$LMSTUDIO_BIN" --run-as-service
+
+  sleep 10
+done

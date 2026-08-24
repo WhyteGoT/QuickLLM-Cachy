@@ -1,0 +1,33 @@
+[Unit]
+Description=Beszel Agent (monitoraggio host)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# KEY e TOKEN sono segreti: stanno in un file 0600 fuori dal repo.
+EnvironmentFile=@SECRETS_DIR@/beszel-agent.env
+ExecStart=@BESZEL_AGENT_BIN@
+User=beszel
+Restart=on-failure
+RestartSec=5
+StateDirectory=beszel-agent
+
+KeyringMode=private
+LockPersonality=yes
+ProtectClock=yes
+ProtectHome=read-only
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectSystem=strict
+RemoveIPC=yes
+RestrictSUIDSGID=true
+
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidia-caps rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-modeset rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+
+[Install]
+WantedBy=multi-user.target
